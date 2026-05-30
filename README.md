@@ -7,6 +7,12 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/jtkjp06/ds4xbox/releases/latest">
+    <img src="https://img.shields.io/badge/DOWNLOAD-ds4xbox__release.zip-brightgreen?style=for-the-badge&logo=github&logoColor=white" alt="Download Stable Release" height="42" />
+  </a>
+</p>
+
 ---
 
 ## 🌟 概要
