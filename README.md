@@ -55,7 +55,7 @@ Windowsが仮想コントローラーを生成し、物理コントローラー�
 1. **ViGEmBus ドライバのインストール**
    * [公式 GitHub Releases](https://github.com/nefarius/ViGEmBus/releases) から最新の `ViGEmBus_Setup.msi` をダウンロードして実行します。
 2. **Legacinator の実行（セキュリティ対策）**
-   * [Legacinator Releases](https://github.com/nefarius/Legacinator/releases) からツールをダウンロードして実行し、ViGEmBusの古いアップデーター（失効ドメインにアクセスしようとするコンポーネント）を画面の指示に従って**完全に削除（クリーン）**します。
+   * [Legacinator Releases](https://github.com/nefarius/Legacinator/releases) からツールをダウンロードして実行し、ViGEmBusの古いアップデーター（失効ドメインにアクセスしようとするコンポーネント）を画面の指示に従って **「完全に削除（クリーン）」** します。
 3. **HidHide ドライバのインストール**
    * [公式 GitHub Releases](https://github.com/nefarius/HidHide/releases) から最新の `HidHideMSI.dmg`（または `.msi`）をダウンロードして実行し、PCを再起動します。
 
@@ -64,7 +64,7 @@ Windowsが仮想コントローラーを生成し、物理コントローラー�
 ### 🏃 導入手順
 
 #### ステップ 1: 本ツールのダウンロード
-* GitHubのリポジトリの **[Releases]** タブから、最新の **`ds4xbox_release.zip`** をダウンロードし、任意のフォルダに解凍します。
+* GitHubのリポジトリの **[Releases]** タブから、最新の `ds4xbox_release.zip` をダウンロードし、任意のフォルダに解凍します。
 
 #### ステップ 2: コントローラーのペアリング
 * コントローラーの **PSボタン** と **Createボタン（左上の3本線ボタン）** を同時に長押しし、ライトバーがピピピと点滅するまで待ちます（ペアリングモード）。
