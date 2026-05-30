@@ -72,6 +72,9 @@ public sealed class TrayApplication : ApplicationContext
         };
         _autoStartMenuItem.Click += OnAutoStartClicked;
 
+        var installDriversMenuItem = new ToolStripMenuItem("ドライバ自動セットアップ...");
+        installDriversMenuItem.Click += async (s, e) => await CheckAndInstallDriversAsync();
+
         var exitMenuItem = new ToolStripMenuItem("終了");
         exitMenuItem.Click += OnExitClicked;
 
@@ -85,6 +88,7 @@ public sealed class TrayApplication : ApplicationContext
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_toggleMenuItem);
         contextMenu.Items.Add(_autoStartMenuItem);
+        contextMenu.Items.Add(installDriversMenuItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(exitMenuItem);
 
@@ -123,9 +127,13 @@ public sealed class TrayApplication : ApplicationContext
     /// <summary>
     /// DualSense → Xbox 360 変換を開始する。
     /// </summary>
-    private void StartConversion()
+    private async void StartConversion()
     {
         if (_isActive) return;
+
+        // ドライバの自動チェックとインストール
+        bool driversAvailable = await CheckAndInstallDriversAsync();
+        if (!driversAvailable) return;
 
         // ViGEmBus に接続
         _busHandle = ViGEmInterop.OpenBus();
@@ -375,6 +383,121 @@ public sealed class TrayApplication : ApplicationContext
     private void ShowBalloon(string title, string text, ToolTipIcon icon)
     {
         _trayIcon.ShowBalloonTip(3000, title, text, icon);
+    }
+
+    /// <summary>
+    /// 必要なドライバのインストール状態を確認し、未インストールの場合は
+    /// ユーザーの許可を得て公式リポジトリから安全に自動ダウンロード＆インストールを行います。
+    /// </summary>
+    private async Task<bool> CheckAndInstallDriversAsync()
+    {
+        // 1. ViGEmBus のチェック
+        using (var tempHandle = ViGEmInterop.OpenBus())
+        {
+            if (tempHandle == null || tempHandle.IsInvalid)
+            {
+                var result = MessageBox.Show(
+                    "DS4Xbox の実行に必要な「ViGEmBus ドライバ」が見つかりません。\n\n" +
+                    "【セキュリティ＆ライセンスについて】\n" +
+                    "・本機能は公式リポジトリ (nefarius/ViGEmBus) から安全な署名付きバイナリを直接HTTPSダウンロードします。\n" +
+                    "・一切のサードパーティ外部ライブラリ（NuGet等）を含まない安全な自製コードによって処理されます。\n\n" +
+                    "自動的にダウンロードしてインストールを開始しますか？",
+                    "ViGEmBus ドライバのインストール",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    var setupForm = new SetupForm("ViGEmBus セットアップ", "準備中...");
+                    setupForm.Show();
+
+                    bool installSuccess = await Task.Run(async () =>
+                    {
+                        return await DriverInstaller.InstallViGEmBusAsync((progress, status) =>
+                        {
+                            setupForm.UpdateProgress(progress, status);
+                        });
+                    });
+
+                    setupForm.Close();
+
+                    if (!installSuccess)
+                    {
+                        MessageBox.Show("ViGEmBus のインストールに失敗したか、キャンセルされました。\n手動でインストールを行うか、再度お試しください。", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+
+                    MessageBox.Show("ViGEmBus のインストールが正常に完了しました！", "完了", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+
+        // 2. HidHide のチェック
+        if (!_hidHide.IsAvailable)
+        {
+            var result = MessageBox.Show(
+                "物理DualSenseコントローラーをゲームから隠し、二重入力を完全に防止する「HidHide ドライバ」が見つかりません。\n\n" +
+                "【セキュリティ＆ライセンスについて】\n" +
+                "・公式リポジトリ (nefarius/HidHide) から安全な署名付きバイナリを直接HTTPSダウンロードします。\n" +
+                "・安全なクリーンコードにて実行されます。\n\n" +
+                "自動的にダウンロードしてインストールを開始しますか？",
+                "HidHide ドライバのインストール",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (result == DialogResult.Yes)
+            {
+                var setupForm = new SetupForm("HidHide セットアップ", "準備中...");
+                setupForm.Show();
+
+                bool installSuccess = await Task.Run(async () =>
+                {
+                    return await DriverInstaller.InstallHidHideAsync((progress, status) =>
+                    {
+                        setupForm.UpdateProgress(progress, status);
+                    });
+                });
+
+                setupForm.Close();
+
+                if (!installSuccess)
+                {
+                    MessageBox.Show("HidHide のインストールに失敗したか、キャンセルされました。\n再度お試しください。", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+
+                // 3. Legacinator（セキュリティクリーナー）の実行を提案
+                var legacinatorResult = MessageBox.Show(
+                    "ViGEmBus のインストールに伴い、古いセキュリティリスクのあるアップデーター（失効ドメインへの不正通信の恐れ）をスキャンして削除する公式ツール「Legacinator」を実行しますか？（推奨）",
+                    "セキュリティクリーナーの実行",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (legacinatorResult == DialogResult.Yes)
+                {
+                    var cleanerForm = new SetupForm("Legacinator セットアップ", "準備中...");
+                    cleanerForm.Show();
+
+                    await Task.Run(async () =>
+                    {
+                        await DriverInstaller.RunLegacinatorAsync((progress, status) =>
+                        {
+                            cleanerForm.UpdateProgress(progress, status);
+                        });
+                    });
+
+                    cleanerForm.Close();
+                }
+
+                MessageBox.Show("HidHide のインストールが完了しました！\nドライバの有効化のために PC を再起動してください。", "完了（要再起動）", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
