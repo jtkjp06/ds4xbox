@@ -1,0 +1,23 @@
+# =============================================================================
+# .gitignore for DS4Xbox (.NET / C# Project)
+# =============================================================================
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+
+# IDE specific files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# User-specific configuration (if any)
+# appsettings.json はデフォルト値をリポジトリに含めるため、ここでは除外しません。
+# ただし、ローカル専用の設定を持たせたい場合は個別に除外してください。

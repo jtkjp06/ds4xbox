@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- =============================================================================
+     app.manifest
+     アプリケーションマニフェスト — UAC（管理者権限）の要求定義
+
+     HidHideCLI.exe によるデバイス隠蔽（Cloak）制御には管理者権限が必須。
+     このマニフェストにより、アプリケーション起動時に Windows が自動的に
+     UAC 昇格ダイアログを表示する。
+     ============================================================================= -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="DS4Xbox"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <!-- 管理者権限を要求 -->
+        <!-- HidHideCLI.exe の --cloak-on / --cloak-off は
+             カーネルドライバへの設定変更を伴うため、
+             呼び出し元プロセスに Administrator 権限が必要 -->
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>
