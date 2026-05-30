@@ -147,9 +147,12 @@ public static class DriverInstaller
     {
         try
         {
+            var isMsi = Path.GetExtension(path).Equals(".msi", StringComparison.OrdinalIgnoreCase);
+
             var startInfo = new ProcessStartInfo
             {
-                FileName = path,
+                FileName = isMsi ? "msiexec.exe" : path,
+                Arguments = isMsi ? $"/i \"{path}\"" : "",
                 UseShellExecute = true,
                 Verb = "runas" // 管理者権限で起動（UACプロンプト表示）
             };
