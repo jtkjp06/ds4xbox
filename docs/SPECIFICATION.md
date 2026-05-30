@@ -251,3 +251,16 @@ graph TD
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `startEnabled` | bool | `false` | `true` の場合、アプリ起動時に自動的に変換 ON になる |
+
+## 12. ドライバ自動セットアップ仕様
+
+本アプリケーションは、実行に必要な前提ドライバが不足している場合に、公式の安全なバイナリを自動取得してセットアップを支援する機能を備えています。
+
+| 項目 | 仕様 |
+|---|---|
+| 対象ドライバ | ViGEmBus (v1.22.0), HidHide (v1.4.186.0), Legacinator (v1.2.0) |
+| ダウンロード方式 | `System.Net.Http.HttpClient` による非同期HTTPSダウンロード（リアルタイム進捗報告対応） |
+| セキュリティ | TLS 1.2 / TLS 1.3 の暗号化通信を明示的に指定。GitHub公式リポジトリ（HTTPS）からの直接ダウンロード |
+| インストール方式 | ダウンロード完了後、Windowsの `ProcessStartInfo` を用いて管理者権限（`runas`）でインストーラーを起動。UACによるEV署名検証を通過 |
+| インストール検知 | ・**ViGEmBus**: デバイスインターフェースGUID `{96E42B22-F5E9-42F8-B043-ED0F932F014F}` の有無で判定<br>・**HidHide**: `C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe` の実在判定 |
+

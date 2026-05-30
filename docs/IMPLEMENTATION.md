@@ -14,7 +14,9 @@ ds4xbox/
 ├── Core/
 │   ├── DualSenseReader.cs  # DualSense HIDレポート読み取り・パース
 │   ├── InputMapper.cs      # DualSense → Xbox入力マッピング
-│   └── HidHideController.cs # HidHideCLI制御
+│   ├── HidHideController.cs # HidHideCLI制御
+│   ├── DriverInstaller.cs  # [NEW] ドライバの自動ダウンロードとセットアップ
+│   └── SetupForm.cs        # [NEW] インストール進捗表示フォーム
 ├── UI/
 │   └── TrayApplication.cs  # タスクトレイUI
 └── docs/
@@ -398,3 +400,19 @@ graph TD
 - リトライ間隔: **5 秒**
 - リトライ中も UI スレッドはブロックされない（ポーリングスレッドのみがリトライ）
 - リトライ中はタスクトレイアイコンで切断状態を表示
+
+## 11. ドライバ自動セットアップの実装詳細
+
+### 11.1 Core/DriverInstaller.cs
+
+外部パッケージを一切排除し、.NET 標準の `System.Net.Http.HttpClient` と Windows API `Process.Start` を組み合わせて実装されています。
+
+*   **非同期ダウンロード**: 進捗をパーセンテージ（0-100%）で報告する `Action<int, string>` コールバックをサポートし、バックグラウンドスレッドでストリーミングダウンロードを実行します。
+*   **SSL/TLS セキュリティ**: TLS 1.2 および TLS 1.3 以外の古い暗号化プロトコルを無効化し、Man-in-the-Middle (MitM) 攻撃を防御します。
+*   **UAC 権限昇格の自動化**: ドライバインストーラー（MSI/EXE）を起動する際、`ProcessStartInfo.Verb = "runas"` を指定することで、Windows のユーザーアカウント制御（UAC）ダイアログを自動的に呼び出し、カーネルドライバインストールに必要な特権を取得します。
+
+### 11.2 Core/SetupForm.cs
+
+WinForms の標準コントロールである `ProgressBar` と `Label` のみを配置した、ダークモード調の進捗ダイアログです。
+
+*   **スレッドセーフな UI 更新**: 別スレッド（ダウンロードタスク）から進捗が更新された場合、`InvokeRequired` と `BeginInvoke` を用いて、WinForms の UI スレッド上で安全に表示を書き換えます。
