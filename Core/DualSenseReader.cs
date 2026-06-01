@@ -70,9 +70,12 @@ public struct DualSenseState
 public sealed class DualSenseReader : IDisposable
 {
     private SafeFileHandle? _deviceHandle;
+    private IntPtr _readBufferPtr = IntPtr.Zero;
     private byte[]? _readBuffer;
+    private int _readBufferSize;
     private bool _isUsb;
     private bool _disposed;
+    private int _logCounter = 0;
 
     // Overlapped I/O 用のイベントハンドル
     private IntPtr _overlappedEvent = IntPtr.Zero;
@@ -101,18 +104,39 @@ public sealed class DualSenseReader : IDisposable
         if (devicePath == null)
             return false;
 
+        AppLog.Info($"DualSense device path found: {devicePath}");
         _deviceHandle = HidInterop.OpenDevice(devicePath);
         if (_deviceHandle == null)
+        {
+            AppLog.Error("DualSense device could not be opened.");
             return false;
+        }
 
         // 入力レポート長を取得
-        ushort reportLength = HidInterop.GetInputReportLength(_deviceHandle);
-        _readBuffer = new byte[reportLength];
+        _readBufferSize = HidInterop.GetInputReportLength(_deviceHandle);
+        AppLog.Info($"DualSense input report length: {_readBufferSize}");
+        _readBuffer = new byte[_readBufferSize];
+        _readBufferPtr = Marshal.AllocHGlobal(_readBufferSize);
 
         // USB か Bluetooth かの判定:
-        // USB の場合、入力レポート長は通常 64 バイト
-        // Bluetooth の場合、78 バイト以上になることが多い
-        _isUsb = reportLength <= 64;
+        // 入力レポート長が 78 なら Bluetooth、それ以外(通常64)なら USB と判定する
+        _isUsb = _readBufferSize != 78;
+        AppLog.Info($"DualSense transport detected. USB={_isUsb}, BufferSize={_readBufferSize}");
+
+        if (!_isUsb)
+        {
+            // Bluetooth 接続時:
+            // DualSense を拡張モード (Report ID 0x31) に強制移行させるための Output Report を送信
+            // これにより、高解像度のトリガーやジャイロ、フルボタン機能が有効になる。
+            byte[] magicPacket = new byte[78];
+            magicPacket[0] = 0x31; // Report ID
+            magicPacket[1] = 0x02; // Flags for Bluetooth Output Report
+            bool magicResult = HidInterop.HidD_SetOutputReport(_deviceHandle, magicPacket, magicPacket.Length);
+            AppLog.Info($"DualSense Bluetooth output report sent. Success={magicResult}");
+            
+            // 少し待ってから読み取りを開始する
+            Thread.Sleep(50);
+        }
 
         // Overlapped I/O 用のイベントオブジェクトを作成
         _overlappedEvent = HidInterop.CreateEvent(IntPtr.Zero, true, false, null);
@@ -135,6 +159,12 @@ public sealed class DualSenseReader : IDisposable
         _deviceHandle = null;
         _readBuffer = null;
 
+        if (_readBufferPtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_readBufferPtr);
+            _readBufferPtr = IntPtr.Zero;
+        }
+
         if (_overlappedEvent != IntPtr.Zero)
         {
             HidInterop.CloseHandle(_overlappedEvent);
@@ -155,53 +185,82 @@ public sealed class DualSenseReader : IDisposable
     {
         state = default;
 
-        if (_deviceHandle == null || _readBuffer == null || _overlappedEvent == IntPtr.Zero)
+        if (_deviceHandle == null || _deviceHandle.IsInvalid || _readBuffer == null || _readBufferPtr == IntPtr.Zero)
+        {
             return false;
+        }
 
         // OVERLAPPED 構造体を初期化
-        var overlapped = new HidInterop.OVERLAPPED();
-        overlapped.hEvent = _overlappedEvent;
+        var overlapped = new HidInterop.OVERLAPPED
+        {
+            hEvent = _overlappedEvent
+        };
+
+        // イベントをリセット（必須：これがないと2回目以降の待機が即座に通過してしまう）
         HidInterop.ResetEvent(_overlappedEvent);
 
         // 非同期 ReadFile を開始
+        int bytesRead = 0;
         bool readResult = HidInterop.ReadFile(
             _deviceHandle,
-            _readBuffer,
-            _readBuffer.Length,
+            _readBufferPtr,
+            _readBufferSize,
             out _,
             ref overlapped);
 
         if (!readResult)
         {
             int error = Marshal.GetLastWin32Error();
-            const int ERROR_IO_PENDING = 997;
-
-            if (error != ERROR_IO_PENDING)
-                return false; // I/O 以外のエラー（切断など）
-
-            // I/O が保留中 → イベントの完了をタイムアウト付きで待つ
-            uint waitResult = HidInterop.WaitForSingleObject(_overlappedEvent, ReadTimeoutMs);
-
-            if (waitResult == 0x00000102) // WAIT_TIMEOUT
+            if (error != 997) // ERROR_IO_PENDING
             {
-                // タイムアウト: I/O をキャンセルして戻る
-                HidInterop.CancelIo(_deviceHandle);
+                if (_logCounter++ % 100 == 0)
+                    AppLog.Error($"DualSense ReadFile failed. Win32Error={error}");
                 return false;
             }
 
-            if (waitResult != 0x00000000) // WAIT_OBJECT_0 以外
+            // タイムアウト付きで待機
+            uint waitResult = HidInterop.WaitForSingleObject(_overlappedEvent, ReadTimeoutMs);
+            if (waitResult == 0) // WAIT_OBJECT_0
+            {
+                if (!HidInterop.GetOverlappedResult(_deviceHandle, ref overlapped, out bytesRead, false))
+                {
+                    int ovError = Marshal.GetLastWin32Error();
+                    if (_logCounter++ % 100 == 0)
+                        AppLog.Error($"DualSense GetOverlappedResult failed. Win32Error={ovError}");
+                    return false;
+                }
+            }
+            else
+            {
+                if (_logCounter++ % 100 == 0)
+                    AppLog.Info($"DualSense read timed out or wait failed. Result={waitResult}");
+                // タイムアウト (WAIT_TIMEOUT) またはエラー
+                HidInterop.CancelIo(_deviceHandle);
+                return false;
+            }
+        }
+        else
+        {
+            // 非同期なしで直ちに完了した場合
+            if (!HidInterop.GetOverlappedResult(_deviceHandle, ref overlapped, out bytesRead, false))
                 return false;
         }
-
-        // 転送されたバイト数を取得
-        if (!HidInterop.GetOverlappedResult(_deviceHandle, ref overlapped, out int bytesRead, false))
-            return false;
 
         if (bytesRead == 0)
             return false;
 
+        // ネイティブバッファからマネージド配列へコピー
+        Marshal.Copy(_readBufferPtr, _readBuffer, 0, bytesRead);
+
         // レポートをパース
         state = ParseReport(_readBuffer, bytesRead);
+        
+        // --- 100回に1回程度ログを出す (スパム防止) ---
+        if (_logCounter++ % 100 == 0)
+        {
+            AppLog.Info($"DualSense read {bytesRead} bytes. ReportId=0x{_readBuffer[0]:X2}, LX={state.LeftStickX}, LY={state.LeftStickY}");
+        }
+
         return true;
     }
 
@@ -212,31 +271,54 @@ public sealed class DualSenseReader : IDisposable
     private DualSenseState ParseReport(byte[] report, int length)
     {
         var state = new DualSenseState();
+        if (length == 0) return state;
+
+        // Bluetooth 簡易モード (Report ID 0x01, 長さ10バイト前後) のパース
+        if (!_isUsb && report[0] == 0x01 && length >= 10)
+        {
+            state.LeftStickX = report[1];
+            state.LeftStickY = report[2];
+            state.RightStickX = report[3];
+            state.RightStickY = report[4];
+
+            byte b1 = report[5];
+            state.DPad = (byte)(b1 & 0x0F);
+            state.Square = (b1 & 0x10) != 0;
+            state.Cross = (b1 & 0x20) != 0;
+            state.Circle = (b1 & 0x40) != 0;
+            state.Triangle = (b1 & 0x80) != 0;
+
+            byte b2 = report[6];
+            state.L1 = (b2 & 0x01) != 0;
+            state.R1 = (b2 & 0x02) != 0;
+            state.Create = (b2 & 0x10) != 0;
+            state.Options = (b2 & 0x20) != 0;
+            state.L3 = (b2 & 0x40) != 0;
+            state.R3 = (b2 & 0x80) != 0;
+
+            byte b3 = report[7];
+            state.PSButton = (b3 & 0x01) != 0;
+            state.TouchpadClick = (b3 & 0x02) != 0;
+            state.Mute = (b3 & 0x04) != 0;
+
+            state.L2Trigger = report[8];
+            state.R2Trigger = report[9];
+
+            return state;
+        }
 
         // オフセットの決定
         // USB:       Report ID (0x01) + データ → オフセット 1 からデータ開始
-        // Bluetooth: Report ID が先頭にある場合、追加ヘッダがある場合がある
+        // Bluetooth: 拡張モード (0x31) → オフセット 2 からデータ開始
         int offset;
 
         if (_isUsb)
         {
-            // USB: byte[0] = Report ID (0x01), byte[1] から入力データ
             offset = 1;
         }
         else
         {
-            // Bluetooth 簡易モード (Report ID 0x01):
-            //   USB と同じオフセット
-            // Bluetooth 拡張モード (Report ID 0x31):
-            //   先頭に 2 バイトのヘッダが追加される
-            if (report[0] == 0x31)
-            {
-                offset = 2; // ヘッダ分をスキップしてからデータ開始
-            }
-            else
-            {
-                offset = 1;
-            }
+            offset = 2; // 基本的に 0x31 のみここに来るはず
         }
 
         // 十分なデータがあるか確認

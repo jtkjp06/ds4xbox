@@ -47,6 +47,7 @@ internal static class HidInterop
     // DualSense のデバイス識別子
     public const ushort DUALSENSE_VENDOR_ID = 0x054C;   // Sony
     public const ushort DUALSENSE_PRODUCT_ID = 0x0CE6;  // DualSense
+    public const ushort DUALSENSE_EDGE_PRODUCT_ID = 0x0DF2; // DualSense Edge
 
     // =========================================================================
     // 構造体
@@ -124,6 +125,9 @@ internal static class HidInterop
     [DllImport("hid.dll", SetLastError = true)]
     private static extern int HidP_GetCaps(IntPtr preparsedData, out HIDP_CAPS capabilities);
 
+    [DllImport("hid.dll", SetLastError = true)]
+    public static extern bool HidD_SetOutputReport(SafeFileHandle hidDeviceObject, byte[] reportBuffer, int reportBufferLength);
+
     // =========================================================================
     // DLL インポート: setupapi.dll
     // =========================================================================
@@ -172,7 +176,7 @@ internal static class HidInterop
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool ReadFile(
         SafeFileHandle hFile,
-        byte[] buffer,
+        IntPtr buffer,
         int numberOfBytesToRead,
         out int numberOfBytesRead,
         ref OVERLAPPED overlapped);
@@ -256,7 +260,7 @@ internal static class HidInterop
                         if (HidD_GetAttributes(handle, ref attrs))
                         {
                             if (attrs.VendorID == DUALSENSE_VENDOR_ID &&
-                                attrs.ProductID == DUALSENSE_PRODUCT_ID)
+                                (attrs.ProductID == DUALSENSE_PRODUCT_ID || attrs.ProductID == DUALSENSE_EDGE_PRODUCT_ID))
                             {
                                 return devicePath;
                             }
@@ -302,7 +306,8 @@ internal static class HidInterop
         {
             try
             {
-                if (HidP_GetCaps(preparsedData, out HIDP_CAPS caps) == 0) // HIDP_STATUS_SUCCESS
+                int status = HidP_GetCaps(preparsedData, out HIDP_CAPS caps);
+                if (status == 0x110000) // HIDP_STATUS_SUCCESS
                 {
                     return caps.InputReportByteLength;
                 }

@@ -48,6 +48,15 @@ public sealed class HidHideController
     }
 
     /// <summary>
+    /// 指定したデバイスインスタンスを HidHide の隠蔽対象リストに追加する。
+    /// </summary>
+    public bool HideDeviceInstance(string deviceInstancePath)
+    {
+        if (!IsAvailable) return false;
+        return RunCli($"--dev-hide \"{deviceInstancePath}\"");
+    }
+
+    /// <summary>
     /// Cloak を有効にする（DualSense を他のアプリから隠す）。
     /// </summary>
     /// <returns>成功時 true</returns>
@@ -127,7 +136,11 @@ public sealed class HidHideController
             using var process = Process.Start(startInfo);
             if (process == null) return false;
 
-            process.WaitForExit(5000); // 最大 5 秒待つ
+            if (!process.WaitForExit(5000))
+            {
+                try { process.Kill(); } catch { }
+                return false;
+            }
             return process.ExitCode == 0;
         }
         catch (Exception)

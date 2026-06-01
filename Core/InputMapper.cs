@@ -74,10 +74,10 @@ internal static class InputMapper
         if (ds.L3) buttons |= (ushort)XboxButton.LeftThumb;
         if (ds.R3) buttons |= (ushort)XboxButton.RightThumb;
 
-        // メニュー: Options→Start, Create→Back, PS→Guide
+        // メニュー: Options→Start, Create→Back, PS→Guide, TouchpadClick→Guide
         if (ds.Options) buttons |= (ushort)XboxButton.Start;
         if (ds.Create) buttons |= (ushort)XboxButton.Back;
-        if (ds.PSButton) buttons |= (ushort)XboxButton.Guide;
+        if (ds.PSButton || ds.TouchpadClick) buttons |= (ushort)XboxButton.Guide;
 
         // D-Pad: Hat Switch → 個別ビット変換
         if (ds.DPad < DPadMapUshort.Length)

@@ -9,7 +9,7 @@
     <ApplicationIcon />
     <AssemblyName>DS4Xbox</AssemblyName>
     <RootNamespace>DS4Xbox</RootNamespace>
-    <Description>DualSense to Xbox 360 XInput converter — zero external dependencies</Description>
+    <Description>DualSense to Xbox 360 XInput converter</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Version>1.0.0</Version>
@@ -22,13 +22,28 @@
     <RepositoryUrl>https://github.com/jtkjp06/ds4xbox</RepositoryUrl>
   </PropertyGroup>
 
-  <!-- NuGet パッケージ参照: 意図的にゼロ -->
-  <!-- すべてのロジックは .NET BCL + Windows P/Invoke のみで実装 -->
+  <ItemGroup>
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
+  </ItemGroup>
 
   <ItemGroup>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <EmbeddedResource Include="UI\Resources\controller_logo.png" />
+    <EmbeddedResource Include="UI\Resources\controller_logo_off.png" />
+  </ItemGroup>
+
+  <!-- 除外設定: サブフォルダにあるテストプロジェクトのコードをメインプロジェクトのビルドから除外 -->
+  <ItemGroup>
+    <Compile Remove="DS4Xbox.Tests\**" />
+    <EmbeddedResource Remove="DS4Xbox.Tests\**" />
+    <None Remove="DS4Xbox.Tests\**" />
+  </ItemGroup>
+
+  <!-- テストプロジェクトに対して internal クラスへのアクセスを許可する設定 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DS4Xbox.Tests" />
   </ItemGroup>
 
 </Project>

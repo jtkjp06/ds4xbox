@@ -1,12 +1,9 @@
 // =============================================================================
 // Native/ViGEmInterop.cs
-// ViGEmBus ドライバとの通信を行う P/Invoke 定義
-// 仮想 Xbox 360 コントローラーの生成・入力レポート送信・切断を担当。
+// ViGEmBus ドライバの存在確認と低レベル診断用 P/Invoke 定義。
 //
 // 参照元: ViGEmClient (MIT License, https://github.com/nefarius/ViGEmClient)
-//         のソースコードを読み込み、同等のIOCTL通信をC# P/Invokeで自前実装。
-//
-// 外部ライブラリ（Nefarius.ViGEm.Client NuGet 等）は一切使用しない。
+// 通常動作の仮想 Xbox 360 作成・送信は Nefarius.ViGEm.Client を使用する。
 // =============================================================================
 
 using System.Runtime.InteropServices;
@@ -42,32 +39,52 @@ internal static class ViGEmInterop
     // ViGEmBus の定義:
     //   DeviceType = FILE_DEVICE_BUS_EXTENDER (0x0000002A)
     //   Method     = METHOD_BUFFERED (0)
-    //   Access     = FILE_READ_ACCESS | FILE_WRITE_ACCESS (0x3)
+    //   Access     = command-specific. XUSB report submission requires
+    //                FILE_READ_ACCESS | FILE_WRITE_ACCESS on current ViGEmBus.
 
     private const int FILE_DEVICE_BUS_EXTENDER = 0x0000002A;
     private const int METHOD_BUFFERED = 0;
     private const int FILE_ANY_ACCESS = 0;
     private const int FILE_READ_ACCESS = 1;
     private const int FILE_WRITE_ACCESS = 2;
+    private const int FILE_READ_WRITE_ACCESS = FILE_READ_ACCESS | FILE_WRITE_ACCESS;
 
     private static int CTL_CODE(int deviceType, int function, int method, int access)
         => (deviceType << 16) | (access << 14) | (function << 2) | method;
 
     // Function コード (ViGEmBus ソースの ViGEmBus.h より)
     private static readonly int IOCTL_VIGEM_CHECK_VERSION =
-        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x800, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x800, METHOD_BUFFERED, FILE_WRITE_ACCESS);
 
     private static readonly int IOCTL_VIGEM_PLUGIN_TARGET =
-        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x801, METHOD_BUFFERED, FILE_WRITE_ACCESS);
 
     private static readonly int IOCTL_VIGEM_UNPLUG_TARGET =
-        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x802, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x802, METHOD_BUFFERED, FILE_WRITE_ACCESS);
 
     private static readonly int IOCTL_VIGEM_X360_SUBMIT_REPORT =
-        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x805, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x804, METHOD_BUFFERED, FILE_READ_WRITE_ACCESS);
+
+    private static readonly (string Name, int Code)[] X360SubmitReportIoctlCandidates =
+    [
+        ("candidate/function-0x803/read-write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x803, METHOD_BUFFERED, FILE_READ_WRITE_ACCESS)),
+        ("candidate/function-0x803/write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x803, METHOD_BUFFERED, FILE_WRITE_ACCESS)),
+        ("candidate/function-0x803/any", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)),
+        ("x360/function-0x804/read-write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x804, METHOD_BUFFERED, FILE_READ_WRITE_ACCESS)),
+        ("x360/function-0x804/write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x804, METHOD_BUFFERED, FILE_WRITE_ACCESS)),
+        ("x360/function-0x804/any", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)),
+        ("legacy/function-0x805/read-write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x805, METHOD_BUFFERED, FILE_READ_WRITE_ACCESS)),
+        ("legacy/function-0x805/write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x805, METHOD_BUFFERED, FILE_WRITE_ACCESS)),
+        ("legacy/function-0x805/any", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)),
+        ("candidate/function-0x806/read-write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x806, METHOD_BUFFERED, FILE_READ_WRITE_ACCESS)),
+        ("candidate/function-0x806/write", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x806, METHOD_BUFFERED, FILE_WRITE_ACCESS)),
+        ("candidate/function-0x806/any", CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)),
+    ];
+
+    private static int _x360SubmitReportIoctlCode = IOCTL_VIGEM_X360_SUBMIT_REPORT;
 
     private static readonly int IOCTL_VIGEM_WAIT_DEVICE_READY =
-        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x80B, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS);
+        CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x80B, METHOD_BUFFERED, FILE_WRITE_ACCESS);
 
     // =========================================================================
     // ViGEmBus 通信用構造体
@@ -269,7 +286,7 @@ internal static class ViGEmInterop
         var plugin = new VIGEM_PLUGIN_TARGET
         {
             Size = (uint)Marshal.SizeOf<VIGEM_PLUGIN_TARGET>(),
-            SerialNo = 0, // 自動割り当て
+            SerialNo = 1, // 自動割り当て(0)の代わりに、固定シリアル番号(1)を明示的に指定して確実に作成する
             Type = VIGEM_TARGET_TYPE.Xbox360Wired,
             VendorId = 0x045E, // Microsoft
             ProductId = 0x028E, // Xbox 360 Controller
@@ -289,17 +306,19 @@ internal static class ViGEmInterop
             IntPtr.Zero);
 
         if (!success)
+        {
+            int err = Marshal.GetLastWin32Error();
+            DS4Xbox.Core.AppLog.Error($"DeviceIoControl(IOCTL_VIGEM_PLUGIN_TARGET) failed. Win32Error={err}");
             return 0;
-
-        // ドライバがシリアル番号を出力バッファに返す
-        var result = BytesToStruct<VIGEM_PLUGIN_TARGET>(outBuffer);
-
-        uint serialNo = result.SerialNo;
+        }
 
         // デバイスが PnP マネージャーに認識されるのを待つ
-        WaitDeviceReady(busHandle, serialNo);
+        if (!WaitDeviceReady(busHandle, 1, out int waitError))
+        {
+            DS4Xbox.Core.AppLog.Info($"ViGEmBus wait-ready failed or is unsupported. Win32Error={waitError}");
+        }
 
-        return serialNo;
+        return 1;
     }
 
     /// <summary>
@@ -338,15 +357,82 @@ internal static class ViGEmInterop
         byte[] inBuffer = StructToBytes(report);
         byte[] outBuffer = new byte[inBuffer.Length];
 
-        return DeviceIoControl(
+        bool success = DeviceIoControl(
             busHandle,
-            IOCTL_VIGEM_X360_SUBMIT_REPORT,
+            _x360SubmitReportIoctlCode,
             ref inBuffer[0],
             inBuffer.Length,
             ref outBuffer[0],
             outBuffer.Length,
             out _,
             IntPtr.Zero);
+
+        if (success)
+        {
+            return true;
+        }
+
+        foreach (var candidate in X360SubmitReportIoctlCandidates)
+        {
+            if (candidate.Code == _x360SubmitReportIoctlCode)
+            {
+                continue;
+            }
+
+            success = DeviceIoControl(
+                busHandle,
+                candidate.Code,
+                ref inBuffer[0],
+                inBuffer.Length,
+                ref outBuffer[0],
+                outBuffer.Length,
+                out _,
+                IntPtr.Zero);
+
+            if (success)
+            {
+                _x360SubmitReportIoctlCode = candidate.Code;
+                DS4Xbox.Core.AppLog.Info($"ViGEmBus SubmitReport IOCTL fallback selected: {candidate.Name}");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 診断用に既知の X360 submit IOCTL 候補を試す。
+    /// 成功候補が分かるようにし、ドライバ差分や誤定義を切り分ける。
+    /// </summary>
+    public static IReadOnlyList<(string Name, bool Success, int LastWin32Error)> ProbeSubmitReportIoctls(
+        SafeFileHandle busHandle,
+        XUSB_SUBMIT_REPORT report)
+    {
+        report.Size = (uint)Marshal.SizeOf<XUSB_SUBMIT_REPORT>();
+        byte[] inBuffer = StructToBytes(report);
+        byte[] outBuffer = new byte[inBuffer.Length];
+        var results = new List<(string Name, bool Success, int LastWin32Error)>();
+
+        foreach (var candidate in X360SubmitReportIoctlCandidates)
+        {
+            bool success = DeviceIoControl(
+                busHandle,
+                candidate.Code,
+                ref inBuffer[0],
+                inBuffer.Length,
+                ref outBuffer[0],
+                outBuffer.Length,
+                out _,
+                IntPtr.Zero);
+
+            results.Add((candidate.Name, success, success ? 0 : Marshal.GetLastWin32Error()));
+            if (success)
+            {
+                break;
+            }
+        }
+
+        return results;
     }
 
     // =========================================================================
@@ -356,7 +442,7 @@ internal static class ViGEmInterop
     /// <summary>
     /// デバイスが PnP マネージャーに認識されるまで待つ。
     /// </summary>
-    private static void WaitDeviceReady(SafeFileHandle busHandle, uint serialNo)
+    public static bool WaitDeviceReady(SafeFileHandle busHandle, uint serialNo, out int lastWin32Error)
     {
         var wait = new VIGEM_WAIT_DEVICE_READY
         {
@@ -368,7 +454,7 @@ internal static class ViGEmInterop
         byte[] outBuffer = new byte[inBuffer.Length];
 
         // このIOCTLはデバイスが準備完了するまでブロックする
-        DeviceIoControl(
+        bool success = DeviceIoControl(
             busHandle,
             IOCTL_VIGEM_WAIT_DEVICE_READY,
             ref inBuffer[0],
@@ -377,6 +463,9 @@ internal static class ViGEmInterop
             outBuffer.Length,
             out _,
             IntPtr.Zero);
+
+        lastWin32Error = success ? 0 : Marshal.GetLastWin32Error();
+        return success;
     }
 
     /// <summary>

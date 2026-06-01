@@ -11,6 +11,7 @@
 // =============================================================================
 
 using DS4Xbox;
+using DS4Xbox.Core;
 using DS4Xbox.UI;
 
 namespace DS4Xbox;
@@ -21,8 +22,18 @@ internal static class Program
     /// アプリケーションのメインエントリポイント。
     /// </summary>
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        if (args.Any(arg => string.Equals(arg, "--diagnose", StringComparison.OrdinalIgnoreCase)))
+        {
+            bool showDialog = !args.Any(arg =>
+                string.Equals(arg, "--no-dialog", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(arg, "--quiet", StringComparison.OrdinalIgnoreCase));
+
+            Environment.ExitCode = DiagnosticRunner.Run(showDialog);
+            return;
+        }
+
         // 多重起動防止
         using var mutex = new Mutex(true, "DS4Xbox-SingleInstance", out bool createdNew);
         if (!createdNew)

@@ -1,7 +1,7 @@
 // =============================================================================
 // UI/TrayApplication.cs
 // タスクトレイ（通知領域）に常駐するアプリケーション UI。
-// System.Windows.Forms.NotifyIcon を使用（.NET BCL 標準、外部ライブラリ不使用）。
+// System.Windows.Forms.NotifyIcon を使用してタスクトレイ常駐 UI を提供する。
 //
 // 右クリックメニュー:
 //   ✅ 変換 ON / ⬜ 変換 OFF
@@ -15,7 +15,6 @@
 using System.Drawing;
 using DS4Xbox.Core;
 using DS4Xbox.Native;
-using Microsoft.Win32.SafeHandles;
 
 namespace DS4Xbox.UI;
 
@@ -33,12 +32,12 @@ public sealed class TrayApplication : ApplicationContext
 
     // 変換エンジンの状態
     private bool _isActive;
+    private bool _isStarting;
     private CancellationTokenSource? _pollingCts;
     private Thread? _pollingThread;
 
-    // ViGEmBus 関連
-    private SafeFileHandle? _busHandle;
-    private uint _targetSerialNo;
+    // 仮想 Xbox 360 コントローラー
+    private VirtualXboxController? _virtualController;
 
     // アイコン関連のリソース管理（GDI/HICON リーク防止）
     private readonly IntPtr _onHicon;
@@ -55,8 +54,8 @@ public sealed class TrayApplication : ApplicationContext
         _hidHide = new HidHideController();
 
         // アイコンの事前生成
-        _onHicon = CreateTrayIconRaw(true, out _onIcon);
-        _offHicon = CreateTrayIconRaw(false, out _offIcon);
+        _onHicon = LoadTrayIconFromResource("DS4Xbox.UI.Resources.controller_logo.png", out _onIcon);
+        _offHicon = LoadTrayIconFromResource("DS4Xbox.UI.Resources.controller_logo_off.png", out _offIcon);
 
         // --- コンテキストメニューの構築 ---
         _toggleMenuItem = new ToolStripMenuItem("変換 ON")
@@ -75,6 +74,9 @@ public sealed class TrayApplication : ApplicationContext
         var installDriversMenuItem = new ToolStripMenuItem("ドライバ自動セットアップ...");
         installDriversMenuItem.Click += async (s, e) => await CheckAndInstallDriversAsync();
 
+        var uninstallMenuItem = new ToolStripMenuItem("アンインストール手順...");
+        uninstallMenuItem.Click += OnUninstallClicked;
+
         var exitMenuItem = new ToolStripMenuItem("終了");
         exitMenuItem.Click += OnExitClicked;
 
@@ -89,6 +91,7 @@ public sealed class TrayApplication : ApplicationContext
         contextMenu.Items.Add(_toggleMenuItem);
         contextMenu.Items.Add(_autoStartMenuItem);
         contextMenu.Items.Add(installDriversMenuItem);
+        contextMenu.Items.Add(uninstallMenuItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(exitMenuItem);
 
@@ -113,7 +116,8 @@ public sealed class TrayApplication : ApplicationContext
             _hidHide.RegisterWhitelist();
         }
 
-        // 起動時自動 ON の処理
+        AppLog.Info("Tray application started.");
+
         if (settings.StartEnabled)
         {
             StartConversion();
@@ -129,49 +133,87 @@ public sealed class TrayApplication : ApplicationContext
     /// </summary>
     private async void StartConversion()
     {
-        if (_isActive) return;
+        if (_isActive || _isStarting) return;
+        _isStarting = true;
+        AppLog.Info("Starting conversion.");
 
-        // ドライバの自動チェックとインストール
-        bool driversAvailable = await CheckAndInstallDriversAsync();
-        if (!driversAvailable) return;
-
-        // ViGEmBus に接続
-        _busHandle = ViGEmInterop.OpenBus();
-        if (_busHandle == null)
+        try
         {
-            ShowBalloon("エラー", "ViGEmBus ドライバが見つかりません。\nインストール手順は README.md を参照してください。", ToolTipIcon.Error);
-            return;
+            // ドライバの自動チェックとインストール
+            bool driversAvailable = await CheckAndInstallDriversAsync();
+            if (!driversAvailable)
+            {
+                FailStart("Driver check was cancelled or failed.", "必要なドライバを確認できなかったため、変換を開始できませんでした。");
+                return;
+            }
+
+            _virtualController = new VirtualXboxController();
+            try
+            {
+                _virtualController.Connect();
+            }
+            catch (Exception ex)
+            {
+                _virtualController.Dispose();
+                _virtualController = null;
+                AppLog.Error("Virtual Xbox 360 controller creation failed.", ex);
+                FailStart("Virtual Xbox 360 controller creation failed.", "仮想 Xbox 360 コントローラーの作成に失敗しました。ViGEmBus の状態を確認してください。");
+                return;
+            }
+            AppLog.Info($"Virtual Xbox 360 controller created. UserIndex={_virtualController.UserIndex}");
+
+            // HidHide で DualSense を隠蔽
+            if (_hidHide.IsAvailable)
+            {
+                string? devicePath = HidInterop.FindDualSenseDevicePath();
+                if (devicePath != null)
+                {
+                    // \\?\hid#vid_054c&pid_0ce6#8&2be624b1&0&0000#{guid} -> HID\VID_054C&PID_0CE6\8&2BE624B1&0&0000
+                    string[] parts = devicePath.Split('#');
+                    if (parts.Length >= 3)
+                    {
+                        string instancePath = parts[0].Replace("\\\\?\\", "") + "\\" + parts[1] + "\\" + parts[2];
+                        instancePath = instancePath.ToUpperInvariant();
+                        if (!_hidHide.HideDeviceInstance(instancePath))
+                        {
+                            AppLog.Info($"HidHide device registration failed or was already configured: {instancePath}");
+                        }
+                    }
+                }
+                else
+                {
+                    AppLog.Info("DualSense device path was not found before enabling HidHide cloak.");
+                }
+
+                if (!_hidHide.EnableCloak())
+                {
+                    AppLog.Info("HidHide cloak could not be enabled.");
+                }
+            }
+
+            // ポーリングスレッドを開始
+            _pollingCts = new CancellationTokenSource();
+            _pollingThread = new Thread(() => PollingLoop(_pollingCts.Token))
+            {
+                IsBackground = true,
+                Name = "DS4Xbox-Polling",
+                Priority = ThreadPriority.AboveNormal,
+            };
+            _pollingThread.Start();
+
+            _isActive = true;
+            UpdateTrayState(true);
+            ShowBalloon("DS4Xbox", "変換を開始しました (PS Controller -> Xbox 360)", ToolTipIcon.Info);
         }
-
-        // 仮想 Xbox 360 コントローラーをプラグイン
-        _targetSerialNo = ViGEmInterop.PluginTarget(_busHandle);
-        if (_targetSerialNo == 0)
+        catch (Exception ex)
         {
-            ShowBalloon("エラー", "仮想コントローラーの作成に失敗しました。", ToolTipIcon.Error);
-            _busHandle.Dispose();
-            _busHandle = null;
-            return;
+            AppLog.Error("Conversion start failed unexpectedly.", ex);
+            FailStart("Conversion start failed unexpectedly.", "変換の開始中にエラーが発生しました。ds4xbox.log を確認してください。");
         }
-
-        // HidHide で DualSense を隠蔽
-        if (_hidHide.IsAvailable)
+        finally
         {
-            _hidHide.EnableCloak();
+            _isStarting = false;
         }
-
-        // ポーリングスレッドを開始
-        _pollingCts = new CancellationTokenSource();
-        _pollingThread = new Thread(() => PollingLoop(_pollingCts.Token))
-        {
-            IsBackground = true,
-            Name = "DS4Xbox-Polling",
-            Priority = ThreadPriority.AboveNormal,
-        };
-        _pollingThread.Start();
-
-        _isActive = true;
-        UpdateTrayState(true);
-        ShowBalloon("DS4Xbox", "変換を開始しました (DualSense → Xbox 360)", ToolTipIcon.Info);
     }
 
     /// <summary>
@@ -194,19 +236,20 @@ public sealed class TrayApplication : ApplicationContext
             _hidHide.DisableCloak();
         }
 
-        // 仮想コントローラーをアンプラグ
-        if (_busHandle != null && _targetSerialNo != 0)
-        {
-            ViGEmInterop.UnplugTarget(_busHandle, _targetSerialNo);
-            _targetSerialNo = 0;
-        }
-
-        _busHandle?.Dispose();
-        _busHandle = null;
+        _virtualController?.Dispose();
+        _virtualController = null;
 
         _isActive = false;
         UpdateTrayState(false);
+        AppLog.Info("Conversion stopped.");
         ShowBalloon("DS4Xbox", "変換を停止しました", ToolTipIcon.Info);
+    }
+
+    private void FailStart(string logMessage, string userMessage)
+    {
+        AppLog.Error(logMessage);
+        UpdateTrayState(false);
+        ShowBalloon("DS4Xbox エラー", $"{userMessage}\nログ: {AppLog.LogPath}", ToolTipIcon.Error);
     }
 
     // =========================================================================
@@ -221,6 +264,7 @@ public sealed class TrayApplication : ApplicationContext
     {
         using var reader = new DualSenseReader();
         bool wasConnected = false;
+        int consecutiveSubmitFailures = 0;
 
         while (!ct.IsCancellationRequested)
         {
@@ -231,13 +275,14 @@ public sealed class TrayApplication : ApplicationContext
                 {
                     if (wasConnected)
                     {
-                        // 接続が切れた
+                        AppLog.Info("DualSense disconnected.");
                         UpdateTrayText("DS4Xbox - コントローラー切断");
                         wasConnected = false;
                     }
 
                     if (reader.Connect())
                     {
+                        AppLog.Info("DualSense connected.");
                         wasConnected = true;
                         UpdateTrayText("DS4Xbox - ON (接続中)");
                     }
@@ -253,10 +298,30 @@ public sealed class TrayApplication : ApplicationContext
                 if (reader.ReadState(out DualSenseState dsState))
                 {
                     // マッピング & 送信
-                    if (_busHandle != null && _targetSerialNo != 0)
+                    if (_virtualController != null)
                     {
-                        var report = InputMapper.Map(in dsState, _targetSerialNo);
-                        ViGEmInterop.SubmitReport(_busHandle, report);
+                        try
+                        {
+                            _virtualController.Submit(in dsState);
+                            consecutiveSubmitFailures = 0;
+                        }
+                        catch (Exception ex)
+                        {
+                            consecutiveSubmitFailures++;
+                            if (consecutiveSubmitFailures == 1 || consecutiveSubmitFailures % 100 == 0)
+                            {
+                                AppLog.Error($"ViGEmClient SubmitReport failed. ConsecutiveFailures={consecutiveSubmitFailures}", ex);
+                            }
+
+                            if (consecutiveSubmitFailures >= 10)
+                            {
+                                AppLog.Error("Stopping conversion because ViGEmClient SubmitReport keeps failing.", ex);
+                                NotifyConversionFailureFromWorker(
+                                    "ViGEmBus への入力送信に失敗しました。\n" +
+                                    "diagnose_gamepad.bat で詳細を確認してください。");
+                                return;
+                            }
+                        }
                     }
                 }
                 else
@@ -273,9 +338,26 @@ public sealed class TrayApplication : ApplicationContext
             catch (Exception)
             {
                 // 予期しないエラー: 少し待ってリトライ
+                AppLog.Error("Polling loop failed; reconnecting.");
                 reader.Disconnect();
                 ct.WaitHandle.WaitOne(2000);
             }
+        }
+    }
+
+    private void NotifyConversionFailureFromWorker(string message)
+    {
+        try
+        {
+            _trayIcon.ContextMenuStrip?.BeginInvoke(() =>
+            {
+                StopConversion();
+                ShowBalloon("DS4Xbox エラー", message, ToolTipIcon.Error);
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Failed to marshal conversion failure notification to UI thread.", ex);
         }
     }
 
@@ -313,11 +395,7 @@ public sealed class TrayApplication : ApplicationContext
             _hidHide.DisableCloak();
         }
 
-        // ホワイトリストからも解除
-        if (_hidHide.IsAvailable)
-        {
-            _hidHide.UnregisterWhitelist();
-        }
+        AppLog.Info("Process exit cleanup finished.");
     }
 
     /// <summary>
@@ -400,7 +478,7 @@ public sealed class TrayApplication : ApplicationContext
                     "DS4Xbox の実行に必要な「ViGEmBus ドライバ」が見つかりません。\n\n" +
                     "【セキュリティ＆ライセンスについて】\n" +
                     "・本機能は公式リポジトリ (nefarius/ViGEmBus) から安全な署名付きバイナリを直接HTTPSダウンロードします。\n" +
-                    "・一切のサードパーティ外部ライブラリ（NuGet等）を含まない安全な自製コードによって処理されます。\n\n" +
+                    "・アプリ本体は公式 ViGEm クライアントライブラリを使って仮想 Xbox 360 コントローラーを作成します。\n\n" +
                     "自動的にダウンロードしてインストールを開始しますか？",
                     "ViGEmBus ドライバのインストール",
                     MessageBoxButtons.YesNo,
@@ -440,7 +518,7 @@ public sealed class TrayApplication : ApplicationContext
         if (!_hidHide.IsAvailable)
         {
             var result = MessageBox.Show(
-                "物理DualSenseコントローラーをゲームから隠し、二重入力を完全に防止する「HidHide ドライバ」が見つかりません。\n\n" +
+                "物理コントローラーをゲームから隠し、二重入力を完全に防止する「HidHide ドライバ」が見つかりません。\n\n" +
                 "【セキュリティ＆ライセンスについて】\n" +
                 "・公式リポジトリ (nefarius/HidHide) から安全な署名付きバイナリを直接HTTPSダウンロードします。\n" +
                 "・安全なクリーンコードにて実行されます。\n\n" +
@@ -501,10 +579,36 @@ public sealed class TrayApplication : ApplicationContext
     }
 
     /// <summary>
-    /// タスクトレイ用のアイコンをコード内で動的に生成する。
-    /// ON: 緑の丸、OFF: グレーの丸。
+    /// 埋め込みリソースからPNG画像を読み込み、Win32 HICONおよび Icon オブジェクトを生成する。
     /// </summary>
-    private static IntPtr CreateTrayIconRaw(bool active, out Icon icon)
+    private static IntPtr LoadTrayIconFromResource(string resourceName, out Icon icon)
+    {
+        try
+        {
+            using var stream = typeof(TrayApplication).Assembly.GetManifestResourceStream(resourceName);
+            if (stream == null)
+            {
+                // リソースが見つからない場合のフォールバック（従来の動的描画）
+                return CreateFallbackIcon(resourceName.Contains("logo_off"), out icon);
+            }
+
+            using var bitmap = new Bitmap(stream);
+            
+            // 透過つきで HICON に変換
+            IntPtr hIcon = bitmap.GetHicon();
+            icon = Icon.FromHandle(hIcon);
+            return hIcon;
+        }
+        catch (Exception)
+        {
+            return CreateFallbackIcon(resourceName.Contains("logo_off"), out icon);
+        }
+    }
+
+    /// <summary>
+    /// リソース読み込み失敗時のための安全なフォールバック用アイコン描画。
+    /// </summary>
+    private static IntPtr CreateFallbackIcon(bool isOff, out Icon icon)
     {
         var bitmap = new Bitmap(16, 16);
         using (var g = Graphics.FromImage(bitmap))
@@ -512,8 +616,8 @@ public sealed class TrayApplication : ApplicationContext
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
 
-            Color fillColor = active ? Color.FromArgb(0, 200, 83) : Color.FromArgb(128, 128, 128);
-            Color borderColor = active ? Color.FromArgb(0, 150, 60) : Color.FromArgb(90, 90, 90);
+            Color fillColor = !isOff ? Color.FromArgb(0, 200, 83) : Color.FromArgb(128, 128, 128);
+            Color borderColor = !isOff ? Color.FromArgb(0, 150, 60) : Color.FromArgb(90, 90, 90);
 
             using var brush = new SolidBrush(fillColor);
             using var pen = new Pen(borderColor, 1.0f);
@@ -525,5 +629,118 @@ public sealed class TrayApplication : ApplicationContext
         IntPtr hIcon = bitmap.GetHicon();
         icon = Icon.FromHandle(hIcon);
         return hIcon;
+    }
+
+    /// <summary>
+    /// アンインストールがクリックされた際のハンドラ。
+    /// アンインストーラーバッチファイルを作成・起動して自身を安全にクローズします。
+    /// </summary>
+    private void OnUninstallClicked(object? sender, EventArgs e)
+    {
+        var result = MessageBox.Show(
+            "DS4Xbox をアンインストールしますか？\n\n" +
+            "【処理内容】\n" +
+            "・本アプリケーションの設定や自動起動設定をクリーンアップします。\n" +
+            "・仮想コントローラードライバ（ViGEmBus / HidHide）のアンインストール手順をご案内します。\n\n" +
+            "よろしければ「はい」を押してください。自動的にアンインストーラーを起動し、アプリを終了します。",
+            "DS4Xbox アンインストール",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (result == DialogResult.Yes)
+        {
+            try
+            {
+                string exeDir = AppContext.BaseDirectory;
+                string batPath = Path.Combine(exeDir, "uninstall.bat");
+
+                // 最新のアンインストールバッチを書き出す（常に上書き）
+                string batContent = GetUninstallBatContent();
+                File.WriteAllText(batPath, batContent, System.Text.Encoding.UTF8);
+
+                // 管理者権限でアンインストーラーバッチを起動
+                var startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c \"{batPath}\"",
+                    UseShellExecute = true,
+                    Verb = "runas", // UAC昇格
+                    WorkingDirectory = exeDir
+                };
+                System.Diagnostics.Process.Start(startInfo);
+
+                // アプリを正常終了
+                OnExitClicked(null, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"アンインストーラーの起動に失敗しました: {ex.Message}", "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    /// <summary>
+    /// アンインストーラーバッチファイルの内容を生成する。
+    /// </summary>
+    private static string GetUninstallBatContent()
+    {
+        return @"@echo off
+chcp 65001 > nul
+title DS4Xbox アンインストーラー
+echo ======================================================
+echo             DS4Xbox アンインストーラー
+echo ======================================================
+echo.
+
+:: 管理者権限のチェック
+openfiles >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] このスクリプトは管理者権限で実行する必要があります。
+    echo 右クリックして「管理者として実行」を選択してください。
+    pause
+    exit /b 1
+)
+
+echo [1/5] DS4Xbox プロセスを終了しています...
+taskkill /f /im DS4Xbox.exe >nul 2>&1
+timeout /t 1 >nul
+
+echo [2/5] 自動起動設定を解除しています...
+reg delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v ""DS4Xbox"" /f >nul 2>&1
+
+echo [3/5] HidHide のホワイトリストから登録を解除しています...
+set ""HIDHIDE_CLI=C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe""
+if exist ""%HIDHIDE_CLI%"" (
+    ""%HIDHIDE_CLI%"" --app-unreg ""%~dp0DS4Xbox.exe"" >nul 2>&1
+    ""%HIDHIDE_CLI%"" --cloak-off >nul 2>&1
+    echo [INFO] HidHide の設定をクリーンアップしました。
+)
+
+echo [4/5] 設定ファイルを削除しています...
+if exist ""appsettings.json"" (
+    del ""appsettings.json""
+    echo [INFO] appsettings.json を削除しました。
+)
+
+echo [5/5] ドライバ類のアンインストール案内...
+echo.
+echo ======================================================
+echo 以下のカーネルドライバを完全にシステムから削除したい場合は、
+echo 以下の手順で手動でアンインストールを行ってください：
+echo.
+echo 1. Windowsの「設定」 ➔ 「アプリ」 ➔ 「インストールされているアプリ」を開きます。
+echo 2. 一覧から以下の2つを見つけてアンインストールしてください：
+echo    - 「ViGEmBus Driver」
+echo    - 「HidHide Driver」
+echo.
+echo ※ または、公式セキュリティクリーナー「Legacinator」を実行して
+echo   残存ファイルを一括で安全にクリーンアップしてください。
+echo ======================================================
+echo.
+echo アンインストール処理の準備が完了しました。
+echo このバッチファイルがあるフォルダ内のファイルを削除して作業を完了してください。
+echo.
+pause
+";
     }
 }

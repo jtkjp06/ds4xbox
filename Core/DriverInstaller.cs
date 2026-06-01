@@ -2,7 +2,7 @@
 // Core/DriverInstaller.cs
 // 必要な外部ドライバ（ViGEmBus / HidHide / Legacinator）を公式 GitHub Releases
 // から安全に自動ダウンロードし、PCへのインストールを代行するユーティリティ。
-// 100% C# 自前実装（ゼロパッケージ依存）。
+// ドライバ取得処理自体は .NET 標準ライブラリで実装。
 // =============================================================================
 
 using System.Diagnostics;
@@ -18,8 +18,8 @@ namespace DS4Xbox.Core;
 public static class DriverInstaller
 {
     // 公式の安全性が確認されている直接ダウンロードURL
-    private const string ViGEmBusUrl = "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_Setup.msi";
-    private const string HidHideUrl = "https://github.com/nefarius/HidHide/releases/download/v1.4.186.0/HidHideMSI.msi";
+    private const string ViGEmBusUrl = "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe";
+    private const string HidHideUrl = "https://github.com/nefarius/HidHide/releases/download/v1.4.186.0/HidHide_1.4.186_x64.exe";
     private const string LegacinatorUrl = "https://github.com/nefarius/Legacinator/releases/download/v1.2.0/Legacinator.exe";
 
     /// <summary>
@@ -27,7 +27,7 @@ public static class DriverInstaller
     /// </summary>
     public static async Task<bool> InstallViGEmBusAsync(Action<int, string> onProgress)
     {
-        string tempFile = Path.Combine(Path.GetTempPath(), "ViGEmBus_Setup.msi");
+        string tempFile = Path.Combine(Path.GetTempPath(), "ViGEmBus_1.22.0_x64_x86_arm64.exe");
         onProgress(0, "ViGEmBus ドライバを公式リポジトリからダウンロード中...");
         
         bool success = await DownloadFileAsync(ViGEmBusUrl, tempFile, (progress) => 
@@ -50,7 +50,7 @@ public static class DriverInstaller
     /// </summary>
     public static async Task<bool> InstallHidHideAsync(Action<int, string> onProgress)
     {
-        string tempFile = Path.Combine(Path.GetTempPath(), "HidHideMSI.msi");
+        string tempFile = Path.Combine(Path.GetTempPath(), "HidHide_1.4.186_x64.exe");
         onProgress(0, "HidHide ドライバを公式リポジトリからダウンロード中...");
 
         bool success = await DownloadFileAsync(HidHideUrl, tempFile, (progress) =>
@@ -105,6 +105,9 @@ public static class DriverInstaller
             }
 
             using var client = new HttpClient();
+            // GitHub からのダウンロードに必須の User-Agent ヘッダを追加
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
             // TLS1.2 / TLS1.3 を有効化
             System.Net.ServicePointManager.SecurityProtocol = 
                 System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls13;
