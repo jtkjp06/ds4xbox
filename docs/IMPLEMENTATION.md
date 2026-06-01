@@ -305,7 +305,7 @@ internal class HidHideController
 | 項目 | 種類 | 動作 |
 |---|---|---|
 | 変換 ON/OFF | チェック付きトグル | 変換の開始/停止、HidHide の切り替え |
-| 起動時自動 ON | チェック付きトグル | `appsettings.json` の `startEnabled` を更新 |
+| Windows起動時に自動ON | チェック付きトグル | `appsettings.json` の `startEnabled` を更新し、`schtasks` でログオン時タスクを作成/削除 |
 | ドライバ自動セットアップ | 通常項目 | ViGEmBus / HidHide の導入支援 |
 | アンインストール手順 | 通常項目 | クリーンアップ手順を起動 |
 | 終了 | 通常項目 | クリーンアップ後にアプリケーションを終了 |
@@ -349,7 +349,7 @@ graph TD
     A["アプリケーション起動"] --> B["appsettings.json を読み込み"]
     B --> C["TrayApplication を生成"]
     C --> D{"startEnabled == true?"}
-    D -->|Yes| E["自動的に変換を開始"]
+    D -->|Yes| E["ログオン時タスクを同期<br/>自動的に変換を開始"]
     D -->|No| F["待機状態で起動"]
     E --> G["Application.Run()<br/>メッセージループに入る"]
     F --> G
@@ -481,7 +481,7 @@ WinForms の標準コントロールである `ProgressBar` と `Label` のみ�
 
 ### 13.2 クリーンアップ処理内容
 1. **プロセスの強制終了**: 実行中の `DS4Xbox.exe` を安全にタスクキルし、ファイルを削除可能な状態にします。
-2. **自動起動レジストリの解除**: レジストリ `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` から自動起動キー `DS4Xbox` を削除。
+2. **自動起動設定の解除**: 互換性のためレジストリ `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` の `DS4Xbox` を削除し、スケジュールタスク `DS4Xbox` も削除。
 3. **HidHide 排他制御の解除**: ドライバユーティリティ `HidHideCLI.exe` を叩き、隠蔽中だった物理コントローラーを再露出（Cloak OFF）させ、ホワイトリストに登録されていた `DS4Xbox.exe` のパスだけを解除します。
 4. **設定ファイルの抹消**: ユーザーが変更した `appsettings.json` を削除します。
 5. **ドライバアンインストールのガイダンス**: カーネルドライバ (ViGEmBus / HidHide) 自体の完全な削除手順（Legacinator の推奨およびコントロールパネルからのアンインストール方法）を対話形式で案内します。

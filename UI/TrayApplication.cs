@@ -5,7 +5,7 @@
 //
 // 右クリックメニュー:
 //   ✅ 変換 ON / ⬜ 変換 OFF
-//   ⚙ 起動時に自動ON
+//   ⚙ Windows起動時に自動ON
 //   ─────────────────
 //   ❌ 終了
 //
@@ -13,6 +13,7 @@
 // =============================================================================
 
 using System.Drawing;
+using System.Diagnostics;
 using DS4Xbox.Core;
 using DS4Xbox.Native;
 
@@ -64,7 +65,7 @@ public sealed class TrayApplication : ApplicationContext
         };
         _toggleMenuItem.Click += OnToggleClicked;
 
-        _autoStartMenuItem = new ToolStripMenuItem("起動時に自動ON")
+        _autoStartMenuItem = new ToolStripMenuItem("Windows起動時に自動ON")
         {
             Checked = settings.StartEnabled,
             CheckOnClick = true,
@@ -120,6 +121,7 @@ public sealed class TrayApplication : ApplicationContext
 
         if (settings.StartEnabled)
         {
+            ConfigureWindowsStartup(true);
             StartConversion();
         }
     }
@@ -377,6 +379,45 @@ public sealed class TrayApplication : ApplicationContext
     {
         _settings.StartEnabled = _autoStartMenuItem.Checked;
         _settings.Save();
+        ConfigureWindowsStartup(_settings.StartEnabled);
+    }
+
+    private static void ConfigureWindowsStartup(bool enabled)
+    {
+        string exePath = Application.ExecutablePath;
+        string arguments = enabled
+            ? $"/Create /TN \"DS4Xbox\" /TR \"\\\"{exePath}\\\"\" /SC ONLOGON /RL HIGHEST /F"
+            : "/Delete /TN \"DS4Xbox\" /F";
+
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "schtasks.exe",
+                Arguments = arguments,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+
+            bool exited = process?.WaitForExit(5000) == true;
+            if (process == null || !exited || process.ExitCode != 0)
+            {
+                string error = !exited
+                    ? "schtasks.exe timed out."
+                    : process?.StandardError.ReadToEnd() ?? "schtasks.exe did not start.";
+                AppLog.Error($"Failed to {(enabled ? "create" : "delete")} startup task. {error}");
+            }
+            else
+            {
+                AppLog.Info(enabled ? "Windows startup task registered." : "Windows startup task removed.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Windows startup task configuration failed.", ex);
+        }
     }
 
     private void OnExitClicked(object? sender, EventArgs e)
@@ -707,6 +748,7 @@ timeout /t 1 >nul
 
 echo [2/5] 自動起動設定を解除しています...
 reg delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v ""DS4Xbox"" /f >nul 2>&1
+schtasks /Delete /TN ""DS4Xbox"" /F >nul 2>&1
 
 echo [3/5] HidHide のホワイトリストから登録を解除しています...
 set ""HIDHIDE_CLI=C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe""
