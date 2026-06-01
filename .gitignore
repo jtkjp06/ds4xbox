@@ -5,6 +5,11 @@
 # Build outputs
 [Bb]in/
 [Oo]bj/
+release_package/
+
+# Runtime diagnostics
+diagnostic_result.txt
+ds4xbox.log
 
 # IDE specific files
 .vs/

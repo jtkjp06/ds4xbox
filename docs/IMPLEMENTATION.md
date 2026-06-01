@@ -4,28 +4,42 @@
 
 ```
 ds4xbox/
-├── DS4Xbox.csproj          # プロジェクトファイル（NuGet参照ゼロ）
+├── DS4Xbox.csproj          # プロジェクトファイル（ViGEmClient参照・テスト除外・InternalsVisibleTo設定）
 ├── Program.cs              # エントリポイント
 ├── appsettings.json        # 設定ファイル
+├── setup_gamepad.bat       # ソースチェックアウト向け publish + 起動スクリプト
 ├── start_gamepad.bat       # バックグラウンド起動スクリプト
+├── diagnose_gamepad.bat    # 実機・ドライバ診断スクリプト
+├── open_game_controllers.bat # Windows ゲームコントローラー設定を開く確認用スクリプト
+├── uninstall.bat           # [NEW] アンインストーラースクリプト
 ├── Native/
 │   ├── HidInterop.cs       # Windows HID API P/Invoke定義
-│   └── ViGEmInterop.cs     # ViGEmBus IOCTL P/Invoke定義
+│   └── ViGEmInterop.cs     # ViGEmBus 検出・低レベル診断用 P/Invoke定義
 ├── Core/
 │   ├── DualSenseReader.cs  # DualSense HIDレポート読み取り・パース
 │   ├── InputMapper.cs      # DualSense → Xbox入力マッピング
 │   ├── HidHideController.cs # HidHideCLI制御
-│   ├── DriverInstaller.cs  # [NEW] ドライバの自動ダウンロードとセットアップ
-│   └── SetupForm.cs        # [NEW] インストール進捗表示フォーム
+│   ├── VirtualXboxController.cs # 公式 ViGEmClient による仮想 Xbox 360 制御
+│   ├── DriverInstaller.cs  # ドライバの自動ダウンロードとセットアップ
+│   ├── AppLog.cs           # 実行ログ
+│   ├── DiagnosticRunner.cs # 段階診断モード
+│   └── SetupForm.cs        # インストール進捗表示フォーム
 ├── UI/
-│   └── TrayApplication.cs  # タスクトレイUI
+│   ├── TrayApplication.cs  # タスクトレイUI（PNGアイコン・アンインストール機能）
+│   └── Resources/
+│       ├── controller_logo.png     # [NEW] ON状態用オシャレコントローラー画像（埋め込み）
+│       └── controller_logo_off.png # [NEW] OFF状態用オシャレコントローラー画像（埋め込み）
+├── DS4Xbox.Tests/          # [NEW] xUnit 単体テストプロジェクト
+│   ├── DS4Xbox.Tests.csproj
+│   └── InputMapperTests.cs
+├── ds4xbox.sln             # [NEW] ソリューションファイル
 └── docs/
     ├── SPECIFICATION.md     # 技術仕様書
     └── IMPLEMENTATION.md    # 実装詳細（本ファイル）
 ```
 
 > [!NOTE]
-> `DS4Xbox.csproj` には NuGet パッケージ参照が一切ありません。すべての機能は .NET BCL と Windows P/Invoke のみで実装されています。
+> 仮想 Xbox 360 コントローラーの作成と入力送信には公式の `Nefarius.ViGEm.Client` NuGet パッケージを使用します。HID 読み取り、HidHideCLI 制御、ドライバ検出は Windows API / .NET BCL で実装しています。
 
 ## 2. Native/HidInterop.cs の実装詳細
 
@@ -42,7 +56,7 @@ ds4xbox/
 | `setupapi.dll` | `SetupDiGetDeviceInterfaceDetail` | デバイスパスを取得 |
 | `setupapi.dll` | `SetupDiDestroyDeviceInfoList` | デバイス情報リストを解放 |
 | `kernel32.dll` | `CreateFile` | デバイスハンドルをオープン |
-| `kernel32.dll` | `ReadFile` | HID レポートを読み取り |
+| `kernel32.dll` | `ReadFile` | HID レポートを Overlapped I/O で読み取り |
 | `kernel32.dll` | `CloseHandle` | ハンドルをクローズ |
 
 ### 処理フロー
@@ -71,15 +85,30 @@ graph TD
 
 - `SetupDiGetClassDevs` には `DIGCF_PRESENT | DIGCF_DEVICEINTERFACE` フラグを使用すること
 - `CreateFile` は `GENERIC_READ | GENERIC_WRITE`, `FILE_SHARE_READ | FILE_SHARE_WRITE` で開くこと
-- ブロッキング `ReadFile` を使用するため、専用スレッドで実行すること
+- `ReadFile` は Overlapped I/O で呼び出し、`WaitForSingleObject` で 100ms タイムアウトを設定すること
 
-## 3. Native/ViGEmInterop.cs の実装詳細
+## 3. Core/VirtualXboxController.cs と Native/ViGEmInterop.cs の実装詳細
 
-### ViGEmBus との通信プロトコル
+### 通常動作の ViGEmBus 送信
 
-ViGEmBus ドライバは Windows の `DeviceIoControl` API を通じて IOCTL コマンドを受け付けます。NuGet パッケージ（ViGEmClient）を使用せず、IOCTL を直接発行することで外部依存をゼロにしています。
+通常動作では `Nefarius.ViGEm.Client` の `ViGEmClient` を使い、公式クライアント API 経由で仮想 Xbox 360 コントローラーを作成・更新します。
 
-### 使用する IOCTL コード
+```csharp
+using var client = new ViGEmClient();
+var controller = client.CreateXbox360Controller();
+controller.Connect();
+controller.SetButtonsFull(buttons);
+controller.SetAxisValue(Xbox360Axis.LeftThumbX, leftX);
+controller.SubmitReport();
+```
+
+これにより、ViGEmBus の内部 IOCTL や構造体差分にアプリ側が依存しません。
+
+### 低レベル診断用 IOCTL
+
+`Native/ViGEmInterop.cs` は ViGEmBus の存在確認と、公式クライアント経路で失敗した場合の切り分け用に残しています。診断モードでは必要に応じて既知の X360 submit IOCTL 候補（`0x803`〜`0x806` とアクセスビット差分）を試し、低レベル通信の失敗内容を表示します。
+
+### 使用する低レベル IOCTL コード
 
 公式 ViGEmClient ソースコード（MIT, https://github.com/nefarius/ViGEmClient）を参照して同等の IOCTL を定義します：
 
@@ -104,6 +133,7 @@ GUID: {96E42B22-F5E9-42F8-B043-ED0F932F014F}
 [StructLayout(LayoutKind.Sequential)]
 internal struct XUSB_SUBMIT_REPORT
 {
+    public uint Size;           // 構造体のサイズ
     public uint SerialNo;       // ターゲットのシリアル番号
     public ushort wButtons;     // ボタンビットフィールド
     public byte bLeftTrigger;   // 左トリガー (0-255)
@@ -115,14 +145,15 @@ internal struct XUSB_SUBMIT_REPORT
 }
 ```
 
-### BSOD リスクの軽減策
+### 低レベル診断時の BSOD リスク軽減策
 
 > [!CAUTION]
 > カーネルドライバとの不正な通信は BSOD（ブルースクリーン）を引き起こす可能性があります。以下の対策を講じています。
 
 - すべての `DeviceIoControl` 呼び出しを `try-catch` で保護
 - バッファサイズを厳密に `Marshal.SizeOf` で計算
-- 非同期 (Overlapped) I/O は使用せず、同期モードで安全に通信
+- 通常動作では公式 ViGEmClient API を使い、低レベル `DeviceIoControl` 送信を避ける
+- 診断用 `DeviceIoControl` は Overlapped I/O を使用せず、同期モードで通信
 
 ## 4. Core/DualSenseReader.cs の実装詳細
 
@@ -176,12 +207,12 @@ internal struct DualSenseState
 
 ### 変換処理
 
-`DualSenseState` を受け取り、`XUSB_REPORT` に変換する**純粋関数**として実装します。
+`DualSenseState` を受け取り、`XUSB_SUBMIT_REPORT` に変換する**純粋関数**として実装します。
 
 ```csharp
 internal static class InputMapper
 {
-    public static XUSB_REPORT Map(DualSenseState ds)
+    public static XUSB_SUBMIT_REPORT Map(DualSenseState ds, uint serialNo)
     {
         // ボタンマッピング
         // 軸変換
@@ -275,33 +306,39 @@ internal class HidHideController
 |---|---|---|
 | 変換 ON/OFF | チェック付きトグル | 変換の開始/停止、HidHide の切り替え |
 | 起動時自動 ON | チェック付きトグル | `appsettings.json` の `startEnabled` を更新 |
+| ドライバ自動セットアップ | 通常項目 | ViGEmBus / HidHide の導入支援 |
+| アンインストール手順 | 通常項目 | クリーンアップ手順を起動 |
 | 終了 | 通常項目 | クリーンアップ後にアプリケーションを終了 |
 
 ### アイコンの動的生成
 
-外部アイコンファイルに依存せず、コード内で動的に生成します：
+外部ファイルに依存せず、アセンブリ内に埋め込まれたPNG画像（`controller_logo.png` / `controller_logo_off.png`）を読み込んでアイコン化します。また、読み込み失敗時に備えて動的描画のセーフティフォールバックを搭載しています：
 
 ```csharp
-private Icon CreateIcon(bool isEnabled)
+private static IntPtr LoadTrayIconFromResource(string resourceName, out Icon icon)
 {
-    var bmp = new Bitmap(16, 16);
-    using (var g = Graphics.FromImage(bmp))
+    try
     {
-        g.Clear(Color.Transparent);
-        var color = isEnabled ? Color.LimeGreen : Color.Gray;
-        using (var brush = new SolidBrush(color))
-        {
-            g.FillEllipse(brush, 2, 2, 12, 12);
-        }
+        using var stream = typeof(TrayApplication).Assembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+            return CreateFallbackIcon(resourceName.Contains("logo_off"), out icon);
+
+        using var bitmap = new Bitmap(stream);
+        IntPtr hIcon = bitmap.GetHicon();
+        icon = Icon.FromHandle(hIcon);
+        return hIcon;
     }
-    return Icon.FromHandle(bmp.GetHicon());
+    catch (Exception)
+    {
+        return CreateFallbackIcon(resourceName.Contains("logo_off"), out icon);
+    }
 }
 ```
 
-| 状態 | アイコン |
-|---|---|
-| ON | 🟢 緑色の丸 |
-| OFF | ⚪ グレーの丸 |
+| 状態 | アイコンデザイン | 説明 |
+|---|---|---|
+| ON | 🎮 ネオンブルー・シアン（光るコントローラー） | アクティブ状態（変換処理動作中） |
+| OFF | 🎮 モノトーン・グレー（消灯コントローラー） | 非アクティブ状態（変換処理停止中） |
 
 ## 8. Program.cs の実装詳細
 
@@ -319,7 +356,7 @@ graph TD
     G --> H["終了要求を受信"]
     H --> I["クリーンアップ処理"]
     I --> J["HidHide 隠蔽解除"]
-    J --> K["ViGEm 仮想デバイス切断"]
+    J --> K["ViGEmClient 仮想デバイス切断"]
     K --> L["アプリケーション終了"]
 ```
 
@@ -355,7 +392,7 @@ graph LR
     subgraph "ポーリングスレッド"
         B["DualSense ReadFile"] --> C["パース"]
         C --> D["マッピング"]
-        D --> E["ViGEmBus 送信"]
+        D --> E["ViGEmClient 送信"]
         E --> B
     end
     A -->|"CancellationToken<br/>(停止指示)"| B
@@ -365,7 +402,7 @@ graph LR
 | スレッド | 役割 | 属性 |
 |---|---|---|
 | UI スレッド | WinForms メッセージループ（タスクトレイ） | メインスレッド、STA |
-| ポーリングスレッド | DualSense 読み取り → パース → マッピング → ViGEmBus 送信 | `Thread.IsBackground = true` |
+| ポーリングスレッド | DualSense 読み取り → パース → マッピング → ViGEmClient 送信 | `Thread.IsBackground = true` |
 
 ### ポーリングスレッドの制御
 
@@ -416,3 +453,55 @@ graph TD
 WinForms の標準コントロールである `ProgressBar` と `Label` のみを配置した、ダークモード調の進捗ダイアログです。
 
 *   **スレッドセーフな UI 更新**: 別スレッド（ダウンロードタスク）から進捗が更新された場合、`InvokeRequired` と `BeginInvoke` を用いて、WinForms の UI スレッド上で安全に表示を書き換えます。
+
+---
+
+## 12. 単体テストの実装詳細 (DS4Xbox.Tests)
+
+メインプロジェクトと並行して、信頼性を継続的に保証するための xUnit による単体テストを導入しています。
+
+### 12.1 プロジェクト構成とアクセス制御
+* **テスト除外設定**: メインプロジェクト `DS4Xbox.csproj` はルート階層にあるため、サブディレクトリのソースコードを自動コンパイル対象から外すための除外タグ（`<Compile Remove="DS4Xbox.Tests\**" />`）を適用しています。
+* **InternalsVisibleTo 属性**: メインプロジェクト内の `internal` 修飾子が付けられた重要なロジック（`InputMapper` や `ViGEmInterop.XUSB_SUBMIT_REPORT`）をテストプロジェクトからアクセス可能にするため、`DS4Xbox.csproj` に `<InternalsVisibleTo Include="DS4Xbox.Tests" />` を定義しています。これにより、カプセル化を損なうことなく直接ユニットテストを行えます。
+
+### 12.2 テスト対象と検証項目 (`InputMapperTests.cs`)
+* **フェイスボタンマッピング**: ✕ボタンが Xbox Aボタンに、△ボタンが Xbox Yボタンに正確にマップされるかをビットフラグで検証。
+* **Hat Switch (D-Pad) 変換**: 8方向 Hat Switch 値から Xbox 用のボタンビットの個別結合が正しく算出されるかをテスト。
+* **アナログスティック変換とクランプ**: DualSense (0〜255) から Xbox (-32768〜32767) への変換式において、境界値でも正しく最大/最小値がクランプされ、かつY軸が反転されることを検証。
+* **トリガー入力マッピング**: アナログトリガーの感度が正確にコピーされることを保証。
+
+---
+
+## 13. 自動アンインストーラー (uninstall.bat)
+
+ユーザーのシステム環境を一切汚さず、安全かつ容易に本ツールと関連設定を削除するための自動クリーンアップ機構を搭載しています。
+
+### 13.1 UI メニューとの連携
+`TrayApplication.cs` のコンテキストメニューから「アンインストール手順...」をクリックすると、UAC（ユーザーアカウント制御）が起動し、管理者権限に昇格された状態で自動生成または同梱された `uninstall.bat` を起動し、自身を安全にクローズします。
+
+### 13.2 クリーンアップ処理内容
+1. **プロセスの強制終了**: 実行中の `DS4Xbox.exe` を安全にタスクキルし、ファイルを削除可能な状態にします。
+2. **自動起動レジストリの解除**: レジストリ `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` から自動起動キー `DS4Xbox` を削除。
+3. **HidHide 排他制御の解除**: ドライバユーティリティ `HidHideCLI.exe` を叩き、隠蔽中だった物理コントローラーを再露出（Cloak OFF）させ、ホワイトリストに登録されていた `DS4Xbox.exe` のパスだけを解除します。
+4. **設定ファイルの抹消**: ユーザーが変更した `appsettings.json` を削除します。
+5. **ドライバアンインストールのガイダンス**: カーネルドライバ (ViGEmBus / HidHide) 自体の完全な削除手順（Legacinator の推奨およびコントロールパネルからのアンインストール方法）を対話形式で案内します。
+
+---
+
+## 14. セットアップと診断スクリプト
+
+### 14.1 setup_gamepad.bat
+
+ソースチェックアウトから使うユーザー向けに、`dotnet publish .\DS4Xbox.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true` を実行し、成功後に publish 出力の `DS4Xbox.exe` を起動します。
+
+### 14.2 start_gamepad.bat
+
+配布フォルダでは同じ場所にある `DS4Xbox.exe`、ソースチェックアウトでは `bin\Release\net8.0-windows\win-x64\publish\DS4Xbox.exe` を起動します。Debug 出力や古い publish 出力は参照しません。
+
+### 14.3 diagnose_gamepad.bat
+
+管理者権限がない場合は自身を UAC 昇格して再起動し、`DS4Xbox.exe --diagnose --no-dialog` を起動します。ViGEmBus 接続、公式 ViGEmClient による仮想 Xbox 360 作成、DualSense 検出、DualSense 入力読み取り、ViGEmClient 送信を順番に確認します。公式経路で送信に失敗した場合のみ、低レベル IOCTL 候補を試して切り分け情報を表示します。バッチは結果表示後に `pause` するため、ダブルクリック実行でも成功・失敗行を読み取れます。診断結果は `diagnostic_result.txt` にも保存されます。
+
+### 14.4 open_game_controllers.bat
+
+Windows の `joy.cpl` を開き、`Controller (XBOX 360 For Windows)` の出現と入力反映を確認するための補助スクリプトです。

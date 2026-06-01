@@ -1,60 +1,54 @@
-# 🚀 DS4Xbox v1.0.0 - Stable Release
+# DS4Xbox v1.0.0 Release Notes
 
-**DS4Xbox の記念すべき最初の安定版（v1.0.0）リリースへ頂戴します！**
+DS4Xbox は、PS5 DualSense / DualSense Edge を Windows 上で Xbox 360 コントローラーとして扱うための常駐型変換ツールです。
 
-本リリースは、DualSense（PS5コントローラー）を Windows で低遅延かつセキュアに Xbox 360 コントローラーとしてマッピングするための独立型（ゼロパッケージ依存）アプリケーションです。
+## Highlights
 
----
+- DualSense HID 入力を読み取り、Xbox 360 XInput 相当の入力へ変換します。
+- 仮想 Xbox 360 コントローラーの作成と入力送信には公式 `Nefarius.ViGEm.Client` を使用します。
+- HidHide と連携し、変換 ON 時だけ物理 DualSense をゲームから隠して二重入力を抑えます。
+- トレイアイコンから ON/OFF、自動 ON 設定、ドライバセットアップ、アンインストール案内を実行できます。
+- `diagnose_gamepad.bat` で ViGEmBus、仮想 Xbox 360 作成、DualSense 検出、入力読み取り、ViGEmClient 送信を順番に診断できます。
+- 診断結果は `diagnostic_result.txt`、詳細ログは `ds4xbox.log` に保存されます。
+- `open_game_controllers.bat` で Windows の `joy.cpl` を開き、`Controller (XBOX 360 For Windows)` の入力反映を確認できます。
 
-## 🌟 主な機能と特徴
+## Package Contents
 
-1. **無線（Bluetooth）接続に完全最適化**
-   * Windows標準のBluetoothペアリング経由で動作する、DualSenseのHID入力パケットの自動パース。
-   * 入力データの取りこぼしがなく、対戦アクションゲームでも通用する超低遅延設計。
-2. **外部ライブラリ依存関係ゼロ（究極のセキュリティ）**
-   * サードパーティ製の NuGet / PyPI パッケージを一切使用せず、.NET 8 標準ライブラリと Windows API P/Invoke のみで全ロジックを構成。サプライチェーン攻撃のリスクを完全に排除。
-3. **完全なリソースリークフリー設計（お泊まり放置対応）**
-   * トレイアイコンの更新に伴う `HICON`（unmanaged な GDI ハンドル）の蓄積を完全に防止。
-   * 起動時にアイコンをキャッシュし、アプリ終了時（Dispose サイクル）に `DestroyIcon` を用いて確実に unmanaged リソースを物理破棄する安全設計を採用。
-4. **二重入力（チャタリング）の完全隠蔽**
-   * HidHideCLI との自動連携機能により、ON時には物理コントローラーを瞬時に隠蔽し、ゲーム側には「仮想のXboxコントローラー」1台のみを安全に認識させます。
-5. **スマートUI＆常駐設定**
-   * タスクトレイ常駐型UI（コンテキストメニューからワンクリックでON/OFFが可能）。
-   * `appsettings.json` による「起動時に自動的にONにするか」の永続設定。
+`ds4xbox_release.zip` には以下を含めます。
 
----
+- `DS4Xbox.exe`
+- `appsettings.json`
+- `start_gamepad.bat`
+- `diagnose_gamepad.bat`
+- `open_game_controllers.bat`
+- `uninstall.bat`
+- `README.md`
+- `LICENSE`
 
-## 📥 パッケージ構成（`ds4xbox_release.zip`）
+## Requirements
 
-解凍したフォルダには以下のファイルが含まれています：
-* **`DS4Xbox.exe`**: アセンブリを1つにまとめた単一実行ファイル（約218KB）。
-* **`appsettings.json`**: 自動起動の設定などを保存するJsonファイル。
-* **`start_gamepad.bat`**: コマンドプロンプトの黒い画面を出さずにバックグラウンド起動させるためのランチャー。
+- Windows 10 21H2 以降 / Windows 11
+- ViGEmBus v1.22.0
+- HidHide v1.4.x
+- DualSense / DualSense Edge
 
----
+配布版は self-contained publish の単一 exe を同梱するため、通常利用では .NET ランタイムの別途インストールは不要です。ソースから `setup_gamepad.bat` を使う場合は .NET 8 SDK が必要です。
 
-## 💻 動作要件
+## Quick Start
 
-* **OS**: Windows 10 (21H2以降) / Windows 11
-* **ランタイム**: .NET 8.0 Desktop Runtime（または .NET 8.0 SDK）
-* **必須ドライバ**:
-  * [ViGEmBus v1.22.0](https://github.com/nefarius/ViGEmBus/releases)
-  * [Legacinator](https://github.com/nefarius/Legacinator/releases)（旧アップデーターのクリーンアップツール）
-  * [HidHide v1.4.x](https://github.com/nefarius/HidHide/releases)
+1. `ds4xbox_release.zip` を任意のフォルダに解凍します。
+2. DualSense を USB または Bluetooth で接続します。
+3. `start_gamepad.bat` を実行し、UAC が表示された場合は許可します。
+4. タスクトレイの DS4Xbox アイコンから「変換 ON」を選択します。
+5. `diagnose_gamepad.bat` で `OK: ViGEmClient SubmitReport succeeded.` まで進むことを確認します。
+6. `open_game_controllers.bat` で `Controller (XBOX 360 For Windows)` の入力反映を確認します。
 
----
+## Verification
 
-## 🛠️ クイックスタート
+リリース作成時に以下を実行します。
 
-1. **`ds4xbox_release.zip`** をダウンロードし、任意のフォルダに解凍します。
-2. コントローラーの **PSボタン + Createボタン** を同時押しし、PCのBluetooth設定からペアリングします。
-3. **`start_gamepad.bat`** を実行します（管理者権限の昇格確認に「はい」を選択）。
-   * *※注意: 起動時に「Windows によって PC が保護されました」という SmartScreen 警告画面が出る場合は、**「詳細情報」をクリックし、出現した「実行」ボタン** をクリックして進めてください。高額な商用署名証明書がない個人オープンソースソフトのため警告が出ますが、中身は完全に安全です。*
-4. タスクトレイのアイコンを右クリックし、**「変換 ON」** を選択すると動作が開始されます！
-
----
-
-## 🛡️ セキュリティと検証情報
-* **ビルド警告数**: 0 件
-* **ビルドエラー数**: 0 件
-* **バイナリ著名**: 100% C# オープンソースビルド
+```powershell
+dotnet build .\ds4xbox.sln -c Release --no-restore
+dotnet test .\ds4xbox.sln -c Release --no-restore
+dotnet publish .\DS4Xbox.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+```

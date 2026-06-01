@@ -7,7 +7,7 @@ DS4Xbox は、DualSense（PS5 コントローラー）から HID レポートを
 ```mermaid
 graph LR
     A["DualSense<br/>(Bluetooth/USB)"] -->|HID Report| B["DS4Xbox<br/>(ユーザーモード)"]
-    B -->|XUSB Report| C["ViGEmBus<br/>(カーネルドライバ)"]
+    B -->|"ViGEmClient / XUSB Report"| C["ViGEmBus<br/>(カーネルドライバ)"]
     C -->|XInput| D["ゲーム<br/>(Xbox 360互換)"]
     B -->|"cloak-on/off"| E["HidHide<br/>(カーネルドライバ)"]
 ```
@@ -22,12 +22,13 @@ graph LR
 | コントローラー | Sony DualSense (Vendor ID: `0x054C`, Product ID: `0x0CE6`) |
 | 接続方式 | Bluetooth（USB 有線も対応するが、Bluetooth 最適化） |
 
-## 3. 外部依存（カーネルドライバ）
+## 3. 外部依存
 
-| ドライバ | バージョン | ライセンス | 用途 |
+| 依存 | バージョン | ライセンス | 用途 |
 |---|---|---|---|
 | ViGEmBus | v1.22.0 | MIT | 仮想 Xbox 360 コントローラー生成 |
 | HidHide | v1.4.x | GPLv3 | デバイス隠蔽（二重入力防止） |
+| Nefarius.ViGEm.Client | 1.21.256 | MIT | ViGEmBus への公式ユーザーモードクライアント |
 
 > [!NOTE]
 > これらはカーネルドライバのため自作不可能です。Nefarius 氏の EV コード署名付き公式ビルドを使用します。
@@ -152,7 +153,7 @@ graph LR
 | Create | Back | |
 | Options | Start | |
 | PS Button | Guide | |
-| Touchpad Click | (未割り当て) | 将来の拡張余地 |
+| Touchpad Click | Guide | PS Button と同じ扱い |
 | Mute | (未割り当て) | |
 | D-Pad | D-Pad | Hat Switch → 個別ビット変換 |
 
@@ -210,26 +211,42 @@ xbox_y = -((ds_y - 128) * 257)
 | 項目 | 仕様 |
 |---|---|
 | メインループ | 別スレッドで動作 |
-| 読み取り方式 | Windows HID API の `ReadFile`（ブロッキング） |
-| ViGEmBus 送信 | 入力読み取り直後に即座に送信（1 対 1 対応） |
+| 読み取り方式 | Windows HID API の `ReadFile`（Overlapped I/O） |
+| ViGEmBus 送信 | 公式 ViGEmClient 経由で入力読み取り直後に即座に送信（1 対 1 対応） |
 | タイムアウト | `ReadFile` に 100ms のタイムアウトを設定 |
 
 > [!NOTE]
-> タイムアウトを設定することで、コントローラー切断時にスレッドがハングしない設計になっています。
+> Overlapped I/O と 100ms タイムアウトを組み合わせることで、コントローラー切断時にスレッドがハングしない設計になっています。
 
 ```mermaid
 graph TD
     A["ReadFile<br/>(100ms timeout)"] --> B{読み取り成功?}
     B -->|Yes| C["パース<br/>(DualSenseReader)"]
     C --> D["マッピング<br/>(InputMapper)"]
-    D --> E["送信<br/>(ViGEmBus IOCTL)"]
+    D --> E["送信<br/>(ViGEmClient)"]
     E --> A
     B -->|Timeout| A
     B -->|Error| F["切断検出<br/>→ リトライモード"]
     F --> A
 ```
 
-## 10. HidHide 排他制御
+## 10. 診断モード
+
+`DS4Xbox.exe --diagnose` または `diagnose_gamepad.bat` は以下を順番に確認します。バッチから実行する場合は、必要に応じて UAC 昇格したうえで `--no-dialog` を付けてコンソールに結果を残し、最後に `pause` で利用者が内容を確認できるようにします。同じ内容を `diagnostic_result.txt` にも保存します。
+
+| 項目 | 成功時 |
+|---|---|
+| ViGEmBus 接続 | `ViGEmBus opened` |
+| 仮想 Xbox 360 作成 | `Virtual Xbox 360 controller created` |
+| DualSense 検出 | `DualSense HID device found` |
+| DualSense 読み取り | `DualSense input read` |
+| ViGEmBus 入力送信 | `ViGEmClient SubmitReport succeeded` |
+
+通常動作と診断の主経路は公式 ViGEmClient API です。送信に失敗した場合のみ、低レベル X360 submit IOCTL の候補も順番に試し、どの候補が成功または失敗したかを表示します。候補は Function `0x803`〜`0x806` とアクセスビット差分を含みます。
+
+入力反映の最終確認は `open_game_controllers.bat` で Windows の `joy.cpl` を開き、`Controller (XBOX 360 For Windows)` のプロパティ画面で行います。
+
+## 11. HidHide 排他制御
 
 | 操作 | コマンド | 説明 |
 |---|---|---|
@@ -240,7 +257,7 @@ graph TD
 > [!IMPORTANT]
 > ホワイトリストに自アプリの実行パスを登録することで、HidHide が有効な状態でも自身のみが DualSense を読み取れるようにします。
 
-## 11. 設定ファイル (appsettings.json)
+## 12. 設定ファイル (appsettings.json)
 
 ```json
 {
@@ -252,7 +269,7 @@ graph TD
 |---|---|---|---|
 | `startEnabled` | bool | `false` | `true` の場合、アプリ起動時に自動的に変換 ON になる |
 
-## 12. ドライバ自動セットアップ仕様
+## 13. ドライバ自動セットアップ仕様
 
 本アプリケーションは、実行に必要な前提ドライバが不足している場合に、公式の安全なバイナリを自動取得してセットアップを支援する機能を備えています。
 
@@ -263,4 +280,3 @@ graph TD
 | セキュリティ | TLS 1.2 / TLS 1.3 の暗号化通信を明示的に指定。GitHub公式リポジトリ（HTTPS）からの直接ダウンロード |
 | インストール方式 | ダウンロード完了後、Windowsの `ProcessStartInfo` を用いて管理者権限（`runas`）でインストーラーを起動。UACによるEV署名検証を通過 |
 | インストール検知 | ・**ViGEmBus**: デバイスインターフェースGUID `{96E42B22-F5E9-42F8-B043-ED0F932F014F}` の有無で判定<br>・**HidHide**: `C:\Program Files\Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe` の実在判定 |
-
